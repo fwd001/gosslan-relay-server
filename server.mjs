@@ -42,8 +42,9 @@ const WAIT_TIMEOUT_MS = Number(envInt('WAIT_TIMEOUT_MS', 30_000));
 const IDLE_TIMEOUT_MS = Number(envInt('IDLE_TIMEOUT_MS', 180_000));
 /**
  * 等待阶段替对端暂存的字节上限（每连接）。它和 MAX_CLIENTS 是相乘的 —— 这台进程的
- * 应用层缓冲上界就是两者之积：8MiB×128 = 1GiB 能把小 VPS 打爆，1MiB×128 = 128MiB
- * 则与 systemd MemoryMax=192M / PM2 max_memory_restart=160M 同量级，兜得住。
+ * 应用层缓冲上界就是两者之积：早期给 8MiB（×128 ≈ 1GiB）能被一个连上就不停写字节、
+ * 永远不配对的人打爆。现在 1MiB×128 = 128MiB，加运行时约 174MiB：systemd 的
+ * MemoryMax=192M 装得下，PM2 的 160M 会先重启一次（两种都兜住整机）。
  * 诚实客户端在等待期只发一条 ≤512 字节的协商线，1MiB 仍是两千倍余量。
  */
 const PENDING_MAX = Number(envInt('PENDING_MAX', 1024 * 1024));
