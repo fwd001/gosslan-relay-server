@@ -27,7 +27,7 @@
  */
 
 import net from 'node:net';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 
 const PORT = Number(envInt('PORT', 59993));
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -41,7 +41,8 @@ const WAIT_TIMEOUT_MS = Number(envInt('WAIT_TIMEOUT_MS', 30_000));
 /** 已配对电路的空闲上限：客户端心跳 5s、Presence 10s，180s 无字节即判死。 */
 const IDLE_TIMEOUT_MS = Number(envInt('IDLE_TIMEOUT_MS', 180_000));
 /** 等待阶段能替对端暂存的字节上限（正常远达不到，这是防单侧开讲的内存兜底）。 */
-const PENDING_MAX = Number(envInt('PENDING_MAX', 8 * 1024 * 1024));
+// 最坏内存 = MAX_CLIENTS × PENDING_MAX：8MiB×128 = 1GiB 能被打爆，1MiB×128 = 128MiB 与 MemoryMax=192M 同量级。
+const PENDING_MAX = Number(envInt('PENDING_MAX', 1024 * 1024));
 /** 是否打印事件行（不含任何载荷）。 */
 const LOG_EVENTS = process.env.LOG !== '0';
 
@@ -80,7 +81,8 @@ function envInt(name, dflt) {
 function tokenOk(given) {
   const a = createHash('sha256').update(given, 'utf8').digest();
   const b = createHash('sha256').update(TOKEN, 'utf8').digest();
-  return a.equals(b);
+  // timingSafeEqual 要求等长；两边都是 sha256 摘要（32B），既不按字节早退也不会因口令长度不同而抛错。
+  return timingSafeEqual(a, b);
 }
 
 function clearTimer(which, c) {
