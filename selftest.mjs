@@ -7,7 +7,9 @@
  *   2. 配对之前就已到达的字节不会被吞（首行和首帧挤在同一个 TCP 包里的真实情况）；
  *   3. token 不对 / 通道哈希格式不对 ⇒ 直接拒，且**服务器 stdout 里不出现任何载荷字节**
  *      —— 这是"读不到信息"的可证伪版本：载荷一旦被解析或打印，这里立刻失败；
- *   4. 任一端断开 ⇒ 两端一起干净退出；等待超时 ⇒ 不泄漏槽位。
+ *   4. 任一端断开 ⇒ 两端一起干净退出；等待超时 ⇒ 不泄漏槽位；
+ *   5. 对端迟迟不来时，单侧灌进来的字节最多暂存 PENDING_MAX 就被拒
+ *      —— 这是"不缓存消息"的定量版本：这条挂了，说明这台机器在替人存东西。
  *
  * 跑法：TOKEN=… node selftest.mjs   （退出码 0 = 全部通过）
  */
@@ -30,6 +32,7 @@ const child = spawn(process.execPath, [new URL('./server.mjs', import.meta.url).
     HELLO_TIMEOUT_MS: '1500',
     WAIT_TIMEOUT_MS: '2000',
     IDLE_TIMEOUT_MS: '3000',
+    PENDING_MAX: '4096',
     STATS: '0',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -181,6 +184,23 @@ await test('长期无字节的电路被空闲回收', async () => {
 await test('连上不发首行的连接被超时掐掉', async () => {
   const A = await connect();
   await assertRejected(A); // HELLO_TIMEOUT_MS = 1.5s
+});
+
+// ── 6：等待期暂存有硬上界（"不缓存"的定量版） ─────────────────────────────
+await test('对端不来时，单侧灌入超过 PENDING_MAX 即被拒，不会无限暂存', async () => {
+  const A = await connect();
+  A.write(`GSRL1 ${TOKEN} ${ch('9')}\n`);
+  const t0 = Date.now();
+  const closed = new Promise((r) => {
+    A.once('close', r);
+    A.once('error', r);
+  });
+  A.write(Buffer.alloc(8192, 0x41)); // 8KiB > PENDING_MAX(4KiB)，且远早于 2s 等待超时
+  await closed;
+  const took = Date.now() - t0;
+  // 不检查耗时的话，等待超时（2s）也会关掉连接 ⇒ 这条会假通过。
+  assert.ok(took < 1500, `关闭来得太晚（${took}ms），像是等待超时干的，不是暂存上限干的`);
+  A.destroy();
 });
 
 child.kill('SIGTERM');

@@ -40,8 +40,12 @@ const HELLO_TIMEOUT_MS = Number(envInt('HELLO_TIMEOUT_MS', 10_000));
 const WAIT_TIMEOUT_MS = Number(envInt('WAIT_TIMEOUT_MS', 30_000));
 /** 已配对电路的空闲上限：客户端心跳 5s、Presence 10s，180s 无字节即判死。 */
 const IDLE_TIMEOUT_MS = Number(envInt('IDLE_TIMEOUT_MS', 180_000));
-/** 等待阶段能替对端暂存的字节上限（正常远达不到，这是防单侧开讲的内存兜底）。 */
-// 最坏内存 = MAX_CLIENTS × PENDING_MAX：8MiB×128 = 1GiB 能被打爆，1MiB×128 = 128MiB 与 MemoryMax=192M 同量级。
+/**
+ * 等待阶段替对端暂存的字节上限（每连接）。它和 MAX_CLIENTS 是相乘的 —— 这台进程的
+ * 应用层缓冲上界就是两者之积：8MiB×128 = 1GiB 能把小 VPS 打爆，1MiB×128 = 128MiB
+ * 则与 systemd MemoryMax=192M / PM2 max_memory_restart=160M 同量级，兜得住。
+ * 诚实客户端在等待期只发一条 ≤512 字节的协商线，1MiB 仍是两千倍余量。
+ */
 const PENDING_MAX = Number(envInt('PENDING_MAX', 1024 * 1024));
 /** 是否打印事件行（不含任何载荷）。 */
 const LOG_EVENTS = process.env.LOG !== '0';
@@ -70,14 +74,16 @@ function envInt(name, dflt) {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return String(dflt);
   const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) {
+  // 必须真是整数：`PORT=1.5` / `999999` 过去能通过（只查 finite>0），然后在
+  // listen 里以 Node 内部栈崩掉。配置错误应当一行说清，不该留栈。
+  if (!Number.isInteger(n) || n <= 0) {
     console.error(`[gosslan-relay] ${name}=${raw} 不是正整数，改用 ${dflt}`);
     return String(dflt);
   }
   return raw;
 }
 
-/** token 定长比较（两侧先各过一遍 SHA-256 拉成等长，避免按字节早退的时间差）。 */
+/** token 比较走定长时间，不按字节早退。 */
 function tokenOk(given) {
   const a = createHash('sha256').update(given, 'utf8').digest();
   const b = createHash('sha256').update(TOKEN, 'utf8').digest();
@@ -226,15 +232,22 @@ function onHello(c, chunk) {
     return;
   }
   c.head.push(chunk.subarray(0, nl));
-  const head = Buffer.concat(c.head).toString('utf8').replace(/\r$/, '');
+  const headBuf = Buffer.concat(c.head);
   c.head = [];
+  clearTimer('helloTimer', c);
+  // 换行落在后续 chunk 时，上面那条"无换行才检查"的路径没覆盖到，这里补上：
+  // 承诺是整行 ≤256 字节，就不能只在其中一半路径上生效。
+  if (headBuf.length > MAX_LINE) return reject(c, '首行超长');
+  const head = headBuf.toString('utf8').replace(/\r$/, '');
   // 同一 chunk 里首行之后的字节属于电路载荷，必须留到配对后按序写出。
   const rest = chunk.subarray(nl + 1);
   if (rest.length) {
     c.pending.push(rest);
     c.pendingLen += rest.length;
+    // 首行和第一批载荷挤在同一个包里是常态（客户端拿到"能发了"就乐观开讲），
+    // 不在这里查一次的话，PENDING_MAX 就不是硬上界。
+    if (c.pendingLen > PENDING_MAX) return reject(c, '等待期暂存超限');
   }
-  clearTimer('helloTimer', c);
   acceptHello(c, head);
 }
 
@@ -296,6 +309,14 @@ if (process.env.STATS !== '0') {
     );
   }, 60_000).unref();
 }
+
+// 监听失败（端口被占 / 越界 / 权限不足）过去是未捕获的 'error' 事件 ⇒ Node 裸栈，
+// 在 PM2 下变成难读的崩溃循环。这里给一行能照着修的话。
+server.on('error', (err) => {
+  console.error(`[gosslan-relay] 监听 ${HOST}:${PORT} 失败：${err.code ?? err.message}`);
+  console.error('  端口被占用、超出 0–65535，或当前用户无权绑定。改 PORT 或腾出端口。');
+  process.exit(3);
+});
 
 server.listen(PORT, HOST, () => {
   log(

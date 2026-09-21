@@ -38,12 +38,18 @@ function readToken() {
   const candidates = ['/etc/gosslan-relay.env', path.join(__dirname, '.env')];
   for (const file of candidates) {
     if (!fs.existsSync(file)) continue;
-    const line = fs
-      .readFileSync(file, 'utf8')
-      .split('\n')
-      .map((l) => l.trim())
-      .find((l) => l.startsWith('TOKEN='));
-    if (line) return line.slice('TOKEN='.length).replace(/^["']|["']$/g, '');
+    try {
+      const line = fs
+        .readFileSync(file, 'utf8')
+        .split('\n')
+        .map((l) => l.trim())
+        .find((l) => l.startsWith('TOKEN='));
+      if (line) return line.slice('TOKEN='.length).replace(/^["']|["']$/g, '');
+    } catch (e) {
+      // 典型情况：文件按 README chmod 600 归 root，而 PM2 跑在普通用户下 ⇒ EACCES。
+      // 让它成为一句能照着修的话，而不是 PM2 加载配置时一段没人看得懂的抛栈。
+      console.error(`[gosslan-relay] 读不到 ${file}（${e.code ?? e.message}）：口令文件须对 PM2 的运行用户可读`);
+    }
   }
   // 返回空串 ⇒ server.mjs 以退出码 2 拒绝启动，不会退化成开放代理。
   return '';
