@@ -36,7 +36,12 @@ const TOKEN = process.env.TOKEN ?? '';
 const MAX_CLIENTS = Number(envInt('MAX_CLIENTS', 128));
 /** 首行超时：连上却不说话的连接一律掐掉，不给它占坑的机会。 */
 const HELLO_TIMEOUT_MS = Number(envInt('HELLO_TIMEOUT_MS', 10_000));
-/** 等对端来配对的上限时间；超时放弃（客户端的 10s 循环会重来）。 */
+/**
+ * 等对端来配对的上限时间；超时放弃。
+ * ⚠️ 别把这个值往客户端的协商看门狗之下压（现在主仓是 10s）：有效会合窗口是
+ * min(客户端 socket 存活期, 本值)，调小只会降低配对成功率，不会提高。
+ * 它同时是"首行已被接受"这个信号的长度（服务器不发消息，关闭时机就是回复，见 README 协议规格）。
+ */
 const WAIT_TIMEOUT_MS = Number(envInt('WAIT_TIMEOUT_MS', 30_000));
 /** 已配对电路的空闲上限：客户端心跳 5s、Presence 10s，180s 无字节即判死。 */
 const IDLE_TIMEOUT_MS = Number(envInt('IDLE_TIMEOUT_MS', 180_000));
